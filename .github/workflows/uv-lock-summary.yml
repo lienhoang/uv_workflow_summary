@@ -28,31 +28,39 @@ jobs:
             "refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"
 
       - name: Generate lock file summary
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           python - <<'PY'
           import subprocess
           import tomllib
           from pathlib import Path
 
-          def packages(ref):
+          def read_toml(ref, filename):
               result = subprocess.run(
-                  ["git", "show", f"{ref}:uv.lock"],
+                  ["git", "show", f"{ref}:{filename}"],
                   capture_output=True,
                   check=False,
               )
+
               if result.returncode != 0:
                   return {}
 
-              lock = tomllib.loads(result.stdout.decode())
+              return tomllib.loads(result.stdout.decode())
+
+
+          def packages(ref):
+              lock = read_toml(ref, "uv.lock")
+              pyproject = read_toml(ref, "pyproject.toml")
+
+              # Automatically identify the root project
+              project_name = pyproject.get("project", {}).get("name")
 
               versions = {}
+
               for package in lock.get("package", []):
                   name = package["name"]
 
                   # Ignore root project version changes
-                  if name == "src":
+                  if name == project_name:
                       continue
 
                   versions.setdefault(name, set()).add(
@@ -61,10 +69,12 @@ jobs:
 
               return versions
 
+
           before = packages("HEAD")
           after = packages("refs/remotes/origin/pr-head")
 
           changes = []
+
           for name in sorted(before.keys() | after.keys()):
               old = ", ".join(sorted(before.get(name, []))) or "—"
               new = ", ".join(sorted(after.get(name, []))) or "—"
@@ -72,12 +82,13 @@ jobs:
               if old != new:
                   changes.append(f"- {name} {old} → {new}")
 
-          summary = (
-              "### Changes to the lock file\n\n"
-              + "\n".join(changes)
-              if changes
-              else ""
-          )
+          if changes:
+              summary = (
+                  "### Changes to the lock file\n\n"
+                  + "\n".join(changes)
+              )
+          else:
+              summary = ""
 
           Path("uv-summary.md").write_text(summary)
           PY
@@ -105,7 +116,8 @@ jobs:
               pull_number
             });
 
-            let body = pr.body || '';
+            const originalBody = pr.body || '';
+            let body = originalBody;
 
             // Remove existing summary section
             if (body.includes(start) && body.includes(end)) {
@@ -124,7 +136,7 @@ jobs:
             }
 
             // Avoid unnecessary PR updates
-            if (body !== (pr.body || '')) {
+            if (body !== originalBody) {
               await github.rest.pulls.update({
                 owner,
                 repo,
