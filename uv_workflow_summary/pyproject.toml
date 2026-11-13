@@ -1,0 +1,19 @@
+[project]
+name = "uv-workflow-summary"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Lien Hoang", email = "lien.hoang@ourfuturehealth.org.uk" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.2,<0.12",
+]
