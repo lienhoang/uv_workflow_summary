@@ -1,0 +1,134 @@
+name: Summarise uv.lock changes
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  summarise:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout trusted base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch PR changes
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch origin \
+            "refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"
+
+      - name: Generate lock file summary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python - <<'PY'
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          def packages(ref):
+              result = subprocess.run(
+                  ["git", "show", f"{ref}:uv.lock"],
+                  capture_output=True,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  return {}
+
+              lock = tomllib.loads(result.stdout.decode())
+
+              versions = {}
+              for package in lock.get("package", []):
+                  name = package["name"]
+
+                  # Ignore root project version changes
+                  if name == "src":
+                      continue
+
+                  versions.setdefault(name, set()).add(
+                      package["version"]
+                  )
+
+              return versions
+
+          before = packages("HEAD")
+          after = packages("refs/remotes/origin/pr-head")
+
+          changes = []
+          for name in sorted(before.keys() | after.keys()):
+              old = ", ".join(sorted(before.get(name, []))) or "—"
+              new = ", ".join(sorted(after.get(name, []))) or "—"
+
+              if old != new:
+                  changes.append(f"- {name} {old} → {new}")
+
+          summary = (
+              "### Changes to the lock file\n\n"
+              + "\n".join(changes)
+              if changes
+              else ""
+          )
+
+          Path("uv-summary.md").write_text(summary)
+          PY
+
+      - name: Update PR description
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+
+            const start = '<!-- uv-lock-changes:start -->';
+            const end = '<!-- uv-lock-changes:end -->';
+
+            const summary = fs.readFileSync(
+              'uv-summary.md', 'utf8'
+            ).trim();
+
+            const { owner, repo } = context.repo;
+            const pull_number = context.issue.number;
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number
+            });
+
+            let body = pr.body || '';
+
+            // Remove existing summary section
+            if (body.includes(start) && body.includes(end)) {
+              const from = body.indexOf(start);
+              const to = body.indexOf(end, from) + end.length;
+
+              body = (
+                body.slice(0, from) + body.slice(to)
+              ).trim();
+            }
+
+            // Only add summary if dependencies changed
+            if (summary) {
+              const section = `${start}\n${summary}\n${end}`;
+              body = `${body}\n\n${section}`.trim();
+            }
+
+            // Avoid unnecessary PR updates
+            if (body !== (pr.body || '')) {
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number,
+                body
+              });
+            }
