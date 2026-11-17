@@ -38,4 +38,4 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          python .github/scripts/uv_lock_summary.py
+          python scripts/uv_lock_summary.py
