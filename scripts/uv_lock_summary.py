@@ -4,8 +4,6 @@ import os
 import subprocess
 import tomllib
 import urllib.request
-from pathlib import Path
-
 
 START = "<!-- uv-lock-changes:start -->"
 END = "<!-- uv-lock-changes:end -->"
@@ -15,16 +13,11 @@ def read_toml(ref: str, filename: str) -> dict:
     result = subprocess.run(
         ["git", "show", f"{ref}:{filename}"],
         capture_output=True,
-        check=False,
+        text=True,
+        check=True,
     )
 
-    if result.returncode != 0:
-        # Missing files are treated as empty.
-        if result.stderr.decode().strip():
-            print(f"Could not read {filename} at {ref}")
-        return {}
-
-    return tomllib.loads(result.stdout.decode())
+    return tomllib.loads(result.stdout)
 
 
 def packages(ref: str) -> dict[str, set[str]]:
@@ -57,10 +50,12 @@ def generate_summary(base_ref: str, head_ref: str) -> str:
     changes = []
 
     for name in sorted(before.keys() | after.keys()):
-        old = ", ".join(sorted(before.get(name, []))) or "—"
-        new = ", ".join(sorted(after.get(name, []))) or "—"
+        old_versions = before.get(name, set())
+        new_versions = after.get(name, set())
 
-        if old != new:
+        if old_versions != new_versions:
+            old = ", ".join(sorted(old_versions)) or "—"
+            new = ", ".join(sorted(new_versions)) or "—"
             changes.append(f"- {name} {old} → {new}")
 
     if not changes:
@@ -122,25 +117,25 @@ def main():
     repository = os.environ["GITHUB_REPOSITORY"]
     pr_number = os.environ["PR_NUMBER"]
 
-    summary = generate_summary(
-        "HEAD",
-        "refs/remotes/origin/pr-head",
-    )
+    base_sha = os.environ["BASE_SHA"]
+    head_sha = os.environ["HEAD_SHA"]
+
+    print(f"Comparing base: {base_sha}")
+    print(f"Against head: {head_sha}")
+
+    summary = generate_summary(base_sha, head_sha)
 
     endpoint = f"/repos/{repository}/pulls/{pr_number}"
 
-    # Fetch current PR description
     pr = github_request("GET", endpoint)
     original_body = pr.get("body") or ""
 
-    # Generate updated description
     updated_body = update_pr_body(original_body, summary)
 
     if updated_body == original_body:
         print("No PR description changes required.")
         return
 
-    # Update PR description
     github_request(
         "PATCH",
         endpoint,
